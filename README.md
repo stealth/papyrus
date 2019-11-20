@@ -157,11 +157,87 @@ my test setups:
 ```
 
 TL; DR: There are a lot of tricks going on inside the Python interpreter to
-find so called "landmarks" in order to have the most efficient runtime when
+find so called **landmarks** in order to have the most efficient runtime when
 it starts (there may be precompiled modules, bytecode, etc.).
 
 
+Modules/getpath.c:
 ```C
+208 static void
+209 copy_absolute(char *path, char *p)
+210 {
+211     if (p[0] == SEP)
+212         strcpy(path, p);
+213     else {
+214         if (!getcwd(path, MAXPATHLEN)) {
+215             /* unable to get the current directory */
+216             strcpy(path, p);
+217             return;
+218         }
+219         if (p[0] == '.' && p[1] == SEP)
+220             p += 2;
+221         joinpath(path, p);
+222     }
+223 }
+
+[...]
+
+240 static int
+241 search_for_prefix(char *argv0_path, char *home)
+242 {
+243     size_t n;
+244     char *vpath;
+245
+246     /* If PYTHONHOME is set, we believe it unconditionally */
+247     if (home) {
+248         char *delim;
+249         strncpy(prefix, home, MAXPATHLEN);
+250         delim = strchr(prefix, DELIM);
+251         if (delim)
+252             *delim = '\0';
+253         joinpath(prefix, lib_python);
+254         joinpath(prefix, LANDMARK);
+255         return 1;
+256     }
+257
+258     /* Check to see if argv[0] is in the build directory */
+259     strcpy(prefix, argv0_path);
+260     joinpath(prefix, "Modules/Setup");
+261     if (isfile(prefix)) {
+262         /* Check VPATH to see if argv0_path is in the build directory. */
+263         vpath = VPATH;
+264         strcpy(prefix, argv0_path);
+265         joinpath(prefix, vpath);
+266         joinpath(prefix, "Lib");
+267         joinpath(prefix, LANDMARK);
+268         if (ismodule(prefix))
+269             return -1;
+270     }
+271
+272     /* Search from argv0_path, until root is found */
+273     copy_absolute(prefix, argv0_path);
+274     do {
+275         n = strlen(prefix);
+276         joinpath(prefix, lib_python);
+277         joinpath(prefix, LANDMARK);
+278         if (ismodule(prefix))
+279             return 1;
+280         prefix[n] = '\0';
+281         reduce(prefix);
+282     } while (prefix[0]);
+283
+284     /* Look at configure's PREFIX */
+285     strncpy(prefix, PREFIX, MAXPATHLEN);
+286     joinpath(prefix, lib_python);
+287     joinpath(prefix, LANDMARK);
+288     if (ismodule(prefix))
+289         return 1;
+290
+291     /* Fail */
+292     return 0;
+293 }
+
+[...]
 
 362 static void
 363 calculate_path(void)
@@ -176,6 +252,43 @@ it starts (there may be precompiled modules, bytecode, etc.).
 372     char *path = getenv("PATH");
 373     char *prog = Py_GetProgramName();
 374     char argv0_path[MAXPATHLEN+1];
+[...]
+479 #if HAVE_READLINK
+480     {
+481         char tmpbuffer[MAXPATHLEN+1];
+482         int linklen = readlink(progpath, tmpbuffer, MAXPATHLEN);
+483         while (linklen != -1) {
+484             /* It's not null terminated! */
+485             tmpbuffer[linklen] = '\0';
+486             if (tmpbuffer[0] == SEP)
+487                 /* tmpbuffer should never be longer than MAXPATHLEN,
+488                    but extra check does not hurt */
+489                 strncpy(argv0_path, tmpbuffer, MAXPATHLEN);
+490             else {
+491                 /* Interpret relative to progpath */
+492                 reduce(argv0_path);
+493                 joinpath(argv0_path, tmpbuffer);
+494             }
+495             linklen = readlink(argv0_path, tmpbuffer, MAXPATHLEN);
+496         }
+497     }
+498 #endif /* HAVE_READLINK */
+499
+500     reduce(argv0_path);
+501     /* At this point, argv0_path is guaranteed to be less than
+502        MAXPATHLEN bytes long.
+503     */
+504
+505     if (!(pfound = search_for_prefix(argv0_path, home))) {
+506         if (!Py_FrozenFlag)
+507             fprintf(stderr,
+508                 "Could not find platform independent libraries <prefix>\n");
+509         strncpy(prefix, PREFIX, MAXPATHLEN);
+510         joinpath(prefix, lib_python);
+511     }
+512     else
+513         reduce(prefix);
+514
 
 [...]
 
@@ -188,15 +301,20 @@ it starts (there may be precompiled modules, bytecode, etc.).
 663 }
 ```
 
-Mentioned `Py_GetPath()` is honoring `$PATH`. Thats probably all you need. And it
-is not affected by any of the globals above. But there's more. The `search_for_prefix()`
-function which is called by `calculate_path()` is using `getcwd()` and nobody
-was calling `chdir()` all along! So you still end up searching users home directory
-for modules to load at startup. As using the `site.so` DSO is disabled by
-setting `Py_NoSiteFlag`, we just use another DSO to be loaded. For this to happen
-you need to set a `$PATH` that does not exist, so that `search_for_prefix()` will
-be called with empty `argv0_path` so that the cwd is honored when searching
-for the "landmark".
+Mentioned `Py_GetPath()` is eventually honoring `$PATH`. Thats probably all you need. And it
+is not affected by any of the globals above. But there's more. The `progpath` and
+`argv0_path` can be made empty strings, if `$PATH` is set properly. The `readlink()`
+call will fail and `search_for_prefix()` will be called with empty `argv0_path`.
+This will eventually trigger a `getcwd()` inside `copy_absolute()`, which
+will append a `lib/python2.7` to the *cwd*. As nobody was calling `chdir()` all along,
+this may still be `$HOME`. So you end up searching users home dir
+for modules to load at startup again. As using the `site.so` DSO is disabled by
+setting `Py_NoSiteFlag`, we just use another DSO to be loaded (for example
+`encodings.so`).
+
+For all this to happen you need to set a `$PATH` that does not exist, so that
+`search_for_prefix()` will be called with empty `argv0_path` so that the *cwd* is
+honored when searching for the **landmark** and voila!
 
 
 Demo
