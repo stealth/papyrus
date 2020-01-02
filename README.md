@@ -161,8 +161,44 @@ find so called **landmarks** in order to have the most efficient runtime when
 it starts (there may be precompiled modules, bytecode, etc.).
 
 
+Some definitions:
+
+```C
+ 31 /* this is a wrapper around getenv() that pays attention to
+ 32    Py_IgnoreEnvironmentFlag.  It should be used for getting variables like
+ 33    PYTHONPATH and PYTHONHOME from the environment */
+ 34 #define Py_GETENV(s) (Py_IgnoreEnvironmentFlag ? NULL : getenv(s))
+ 35
+```
+
+```C
+ 669 static char *progname = "python";
+ 670
+ 671 void
+ 672 Py_SetProgramName(char *pn)
+ 673 {
+ 674     if (pn && *pn)
+ 675         progname = pn;
+ 676 }
+ 677
+ 678 char *
+ 679 Py_GetProgramName(void)
+ 680 {
+ 681     return progname;
+ 682 }
+ 683
+```
+
 Modules/getpath.c:
 ```C
+107 static char prefix[MAXPATHLEN+1];
+108 static char exec_prefix[MAXPATHLEN+1];
+109 static char progpath[MAXPATHLEN+1];
+110 static char *module_search_path = NULL;
+111 static char lib_python[] = "lib/python" VERSION;
+
+[...]
+
 208 static void
 209 copy_absolute(char *path, char *p)
 210 {
@@ -252,7 +288,43 @@ Modules/getpath.c:
 372     char *path = getenv("PATH");
 373     char *prog = Py_GetProgramName();
 374     char argv0_path[MAXPATHLEN+1];
+
 [...]
+
+413         else if (path) {
+414                 while (1) {
+415                         char *delim = strchr(path, DELIM);
+416
+417                         if (delim) {
+418                                 size_t len = delim - path;
+419                                 if (len > MAXPATHLEN)
+420                                         len = MAXPATHLEN;
+421                                 strncpy(progpath, path, len);
+422                                 *(progpath + len) = '\0';
+423                         }
+424                         else
+425                                 strncpy(progpath, path, MAXPATHLEN);
+426
+427                         joinpath(progpath, prog);
+428                         if (isxfile(progpath))
+429                                 break;
+430
+431                         if (!delim) {
+432                                 progpath[0] = '\0';
+433                                 break;
+434                         }
+435                         path = delim + 1;
+436                 }
+437         }
+438         else
+439                 progpath[0] = '\0';
+440         if (progpath[0] != SEP && progpath[0] != '\0')
+441                 absolutize(progpath);
+442         strncpy(argv0_path, progpath, MAXPATHLEN);
+443         argv0_path[MAXPATHLEN] = '\0';
+
+[...]
+
 479 #if HAVE_READLINK
 480     {
 481         char tmpbuffer[MAXPATHLEN+1];
@@ -301,11 +373,11 @@ Modules/getpath.c:
 663 }
 ```
 
-Mentioned `Py_GetPath()` is eventually honoring `$PATH`. Thats probably all you need. And it
-is not affected by any of the globals above. But there's more. The `progpath` and
-`argv0_path` can be made empty strings, if `$PATH` is set properly. The `readlink()`
-call will fail and `search_for_prefix()` will be called with empty `argv0_path`.
-This will eventually trigger a `getcwd()` inside `copy_absolute()`, which
+Mentioned `Py_GetPath()` is eventually honoring `$PATH`. Thats probably all you need.
+And it is not affected by any of the globals above. But there's more. The `progpath`
+and `argv0_path` can be made empty strings, if `$PATH` is properly set (line 432 and 442).
+The `readlink()` call will fail and `search_for_prefix()` will be called with empty
+`argv0_path`. This will eventually trigger a `getcwd()` inside `copy_absolute()`, which
 will append a `lib/python2.7` to the *cwd*. As nobody was calling `chdir()` all along,
 this may still be `$HOME`. So you end up searching users home dir
 for modules to load at startup again. As using the `site.so` DSO is disabled by
